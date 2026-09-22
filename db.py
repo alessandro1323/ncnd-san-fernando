@@ -159,6 +159,17 @@ def tickets_vencidos():
         """, (datetime.now().isoformat(),)).fetchall()
 
 
+def tickets_recientes_similares(cliente, motivo, monto, minutos=10):
+    """Busca tickets del mismo cliente/motivo/monto creados en los últimos N minutos,
+    para avisar al cliente si parece un envío duplicado por doble clic."""
+    limite = (datetime.now() - timedelta(minutes=minutos)).isoformat()
+    with _conn() as conn:
+        return conn.execute("""
+            SELECT * FROM tickets
+            WHERE cliente = ? AND motivo = ? AND monto_reclamado = ? AND fecha_creacion >= ?
+        """, (cliente, motivo, monto, limite)).fetchall()
+
+
 def get_ticket(ticket_id):
     with _conn() as conn:
         return conn.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
