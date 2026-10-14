@@ -22,6 +22,11 @@ En Streamlit Cloud: App → Settings → Secrets, y pega algo como esto:
     "1100679218" = "clave-distribuidor-uno"
     "1101229390" = "clave-distribuidor-dos"
 
+    # Opcional: si quieres que también puedan entrar con su RUC, usa esta forma:
+    # [PILOTO_CLIENTES.1100679218]
+    # clave = "clave-distribuidor-uno"
+    # ruc = "20123456789"
+
 Si PILOTO_CLIENTES no está configurado, el portal funciona abierto como antes
 (útil para probar en tu PC).
 """
@@ -46,11 +51,43 @@ def leer(nombre, defecto=None):
 
 
 def clientes_piloto():
-    """Devuelve {codigo_sap: clave} de los distribuidores del piloto, o {} si no hay piloto."""
+    """Devuelve {codigo_sap: {"clave": str, "ruc": str, "razon_social": str}} de los
+    distribuidores del piloto, o {} si no hay piloto. Acepta dos formas en los Secrets:
+        "1100679218" = "clave"                              (solo código)
+        [PILOTO_CLIENTES.1100679218] clave = "..." ruc = "..."  (código o RUC)
+    """
     valor = leer("PILOTO_CLIENTES")
     if not valor:
         return {}
     try:
-        return {str(k).strip(): str(v) for k, v in dict(valor).items()}
+        crudo = dict(valor)
     except (TypeError, ValueError):
         return {}
+    clientes = {}
+    for codigo, datos in crudo.items():
+        codigo = str(codigo).strip()
+        if isinstance(datos, str) or not hasattr(datos, "get"):
+            datos = {"clave": datos}
+        clave = str(datos.get("clave", "") or "").strip()
+        if not codigo or not clave:
+            continue  # un cliente sin clave nunca puede entrar
+        clientes[codigo] = {
+            "clave": clave,
+            "ruc": str(datos.get("ruc", "") or "").strip(),
+            "razon_social": str(datos.get("razon_social", "") or "").strip(),
+        }
+    return clientes
+
+
+def identificar_cliente(identificador, clientes):
+    """Recibe lo que escribió el cliente (código SAP o RUC) y devuelve el código SAP
+    del distribuidor del piloto, o None si no corresponde a ninguno."""
+    ident = "".join(str(identificador or "").split())
+    if not ident:
+        return None
+    if ident in clientes:
+        return ident
+    for codigo, datos in clientes.items():
+        if datos["ruc"] and datos["ruc"] == ident:
+            return codigo
+    return None

@@ -34,14 +34,31 @@ SF_TOKEN_FLUJO = "elige-una-frase-larga-secreta"
 "CODIGO_SAP_DISTRIBUIDOR_2" = "clave-distribuidor-2"
 ```
 
-Los códigos SAP deben existir en `clientes_maestro.csv`. Entrega a cada distribuidor **solo su
-clave**, por un canal privado (WhatsApp o llamada), nunca en un correo masivo.
+**Cómo ingresa el cliente:** escribe su **código de cliente (o RUC) + su clave**. El portal
+**nunca muestra una lista de empresas**, así nadie ve la relación de clientes de San Fernando.
+El error es siempre el mismo ("código/RUC o clave no son correctos"), para no revelar qué códigos
+existen, y tras 5 intentos fallidos ese acceso se bloquea 15 minutos.
 
-## Paso 3 — Lista y carpeta en SharePoint (10 min)
+Si quieres que un distribuidor también pueda entrar con su **RUC**, escríbelo así en lugar de la línea simple:
 
-En el sitio de SharePoint de tu área (o tu OneDrive corporativo):
+```toml
+[PILOTO_CLIENTES.1100679218]
+clave = "clave-distribuidor-1"
+ruc = "20123456789"
+```
 
-1. **Nuevo → Lista → Lista en blanco**, con el nombre `Reclamos NCND`. Crea estas columnas:
+La razón social se toma de `clientes_maestro.csv`; si el código no está ahí, agrega
+`razon_social = "..."` en ese mismo bloque. Entrega a cada distribuidor **su código y su clave**
+por un canal privado (WhatsApp o llamada), nunca en un correo masivo.
+
+## Paso 3 — Lista y carpeta (10 min)
+
+Si tu cuenta no puede crear sitios de SharePoint (pasa en muchas empresas), usa **Microsoft Lists**:
+9 puntitos → **Lists** → **+ Nueva lista → Lista en blanco** → nombre `Reclamos NCND` →
+Guardar en **Mis listas**. Queda en tu OneDrive corporativo y Power Automate la usa igual.
+
+1. Crea estas columnas (la columna **Título** guarda el código del reclamo). En algunas versiones
+   el tipo "Elección" se llama **"Opción"**:
 
 | Columna | Tipo |
 |---|---|
@@ -60,7 +77,7 @@ En el sitio de SharePoint de tu área (o tu OneDrive corporativo):
 | MontoFinal | Moneda (S/) |
 | Observaciones | Varias líneas de texto |
 
-2. En **Documentos**, crea la carpeta `Sustentos NCND`.
+2. Crea la carpeta `Sustentos NCND` en tu **OneDrive** (o en "Documentos" si usas un sitio).
 
 Durante el piloto, el SV y los aprobadores avanzan cada reclamo cambiando **Estado** y
 **MontoFinal** directamente en la Lista.
@@ -97,16 +114,19 @@ En make.powerautomate.com, con tu cuenta corporativa: **Crear → Flujo de nube 
    - Condición: `item()?['name']` **no es igual a** `reclamo.json`
 
 6. **Aplicar a cada uno** (renómbralo a `Cada sustento`) sobre la expresión `body('Buscar_sustento')`
-   → dentro, *SharePoint → Crear archivo*:
-   - Dirección del sitio: elige tu sitio de la lista
+   → dentro, *OneDrive para la Empresa → Crear archivo* (o *SharePoint → Crear archivo* si usas un sitio):
    - Ruta de la carpeta: usa el **ícono de carpeta** y navega hasta `Sustentos NCND`
-     (no la escribas a mano: el nombre interno de la biblioteca puede ser distinto)
+     (no la escribas a mano: el nombre interno puede ser distinto)
    - Nombre de archivo: `items('Cada_sustento')?['name']`
    - Contenido: `base64ToBinary(items('Cada_sustento')?['contentBytes'])`
 
    Si el reclamo no trae sustento, este paso simplemente no hace nada.
 
-7. *SharePoint → Crear elemento* (fuera del "Cada sustento", debajo de él), en la lista `Reclamos NCND`:
+7. *SharePoint → Crear elemento* (fuera del "Cada sustento", debajo de él), en la lista `Reclamos NCND`.
+   - **Dirección del sitio**, si la lista está en "Mis listas": no aparece en el desplegable. Elige
+     **Escribir un valor personalizado** y pega la dirección de tu OneDrive, que es la parte de la URL
+     de la lista **hasta** `/personal/tu_usuario` (ej. `https://empresa-my.sharepoint.com/personal/usuario_empresa_com`).
+   - **Nombre de la lista**: `Reclamos NCND`.
 
 | Columna | Expresión |
 |---|---|

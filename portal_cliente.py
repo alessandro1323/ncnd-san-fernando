@@ -23,12 +23,13 @@ import csv
 import base64
 import re
 import hmac
+import time
 from pathlib import Path
 from db import init_db, crear_ticket, get_ticket, tickets_recientes_similares
 from consulta_ruc import consultar_razon_social
 from notificador import enviar_comprobante_cliente
 from generador_pdf import generar_comprobante_pdf
-from config_piloto import clientes_piloto
+from config_piloto import clientes_piloto, identificar_cliente
 from envio_reclamo import (generar_codigo, enviar_reclamo, envio_configurado,
                            nombre_archivo_seguro, ahora_lima)
 
@@ -42,7 +43,12 @@ AZUL_SF_OSCURO = "#002F63"
 AZUL_SF_CLARO = "#3D7CC9"
 MAX_SUSTENTO_MB = 15  # el correo de envío acepta hasta ~25 MB; dejamos margen
 
-PILOTO = clientes_piloto()  # {codigo_sap: clave}; vacío = portal abierto (pruebas locales)
+PILOTO = clientes_piloto()  # {codigo_sap: {clave, ruc, razon_social}}; vacío = portal abierto (pruebas)
+
+# Protección contra quien intente adivinar claves: tras 5 intentos fallidos con el mismo
+# código/RUC, ese acceso se bloquea 15 minutos (para todos los navegadores a la vez).
+MAX_INTENTOS = 5
+MINUTOS_BLOQUEO = 15
 
 init_db()
 
@@ -70,6 +76,30 @@ def logo_base64():
 @st.cache_data(ttl=3600)
 def buscar_razon_social_cacheada(ruc):
     return consultar_razon_social(ruc)
+
+
+@st.cache_resource
+def _registro_intentos():
+    """Compartido por todas las sesiones de la app: {identificador: [tiempos de fallos]}."""
+    return {}
+
+
+def _fallos_recientes(ident):
+    limite = time.time() - MINUTOS_BLOQUEO * 60
+    registro = _registro_intentos()
+    registro[ident] = [t for t in registro.get(ident, []) if t > limite]
+    return registro[ident]
+
+
+def nombre_cliente(codigo):
+    """Razón social de un código: primero la de los Secrets, si no la del maestro."""
+    datos = PILOTO.get(codigo, {})
+    if datos.get("razon_social"):
+        return datos["razon_social"]
+    for c in cargar_maestro_clientes():
+        if c["codigo_sap"] == codigo:
+            return c["razon_social"]
+    return f"Cliente {codigo}"
 
 
 st.set_page_config(page_title="San Fernando - Registro de reclamos", layout="centered",
@@ -114,30 +144,50 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Acceso del piloto: cada distribuidor entra con su clave
+# Acceso del piloto: cada distribuidor se identifica con su código (o RUC) y su clave.
+# A propósito NO se muestra ninguna lista de empresas: nadie que entre puede ver
+# la relación de clientes de San Fernando.
 if PILOTO:
     if "cliente_piloto" not in st.session_state:
-        maestro_completo = {c["codigo_sap"]: c["razon_social"] for c in cargar_maestro_clientes()}
-        empresas = {f"{maestro_completo.get(cod, 'Cliente')} — {cod}": cod for cod in PILOTO}
-        st.markdown("#### Ingreso para distribuidores")
+        st.markdown("#### Ingreso para clientes")
         with st.form("login_piloto"):
-            empresa = st.selectbox("Tu empresa", list(empresas.keys()))
+            identificador = st.text_input(
+                "Código de cliente o RUC",
+                help="Tu código de cliente de San Fernando o el RUC de tu empresa.",
+            )
             clave = st.text_input("Clave de acceso", type="password",
                                   help="Te la entregó tu ejecutivo de San Fernando.")
-            if st.form_submit_button("Ingresar"):
-                cod = empresas[empresa]
-                if hmac.compare_digest(clave.strip().encode(), PILOTO[cod].strip().encode()):
+            ingresar = st.form_submit_button("Ingresar")
+        st.caption("¿No tienes tu código o tu clave? Solicítalos a tu ejecutivo de San Fernando.")
+
+        if ingresar:
+            ident = "".join(identificador.split())
+            if not ident or not clave.strip():
+                st.error("Escribe tu código de cliente (o RUC) y tu clave.")
+            elif len(_fallos_recientes(ident)) >= MAX_INTENTOS:
+                st.error(f"Demasiados intentos fallidos. Por seguridad, espera {MINUTOS_BLOQUEO} minutos "
+                         "o comunícate con tu ejecutivo de San Fernando.")
+            else:
+                codigo = identificar_cliente(ident, PILOTO)
+                clave_esperada = PILOTO[codigo]["clave"] if codigo else ""
+                # Se compara siempre (aunque el código no exista) para no dar pistas por el tiempo de respuesta
+                clave_ok = hmac.compare_digest(clave.strip().encode(), clave_esperada.encode())
+                if codigo and clave_ok:
+                    _registro_intentos().pop(ident, None)
                     st.session_state["cliente_piloto"] = {
-                        "codigo_sap": cod, "razon_social": maestro_completo.get(cod, empresa.split(" — ")[0]),
+                        "codigo_sap": codigo, "razon_social": nombre_cliente(codigo),
+                        "ruc": PILOTO[codigo]["ruc"],
                     }
                     st.rerun()
                 else:
-                    st.error("La clave no es correcta. Revísala o consulta con tu ejecutivo de San Fernando.")
+                    _registro_intentos().setdefault(ident, []).append(time.time())
+                    # Mensaje genérico a propósito: no revela si el código existe o no
+                    st.error("El código/RUC o la clave no son correctos.")
         st.stop()
     else:
         cp = st.session_state["cliente_piloto"]
         col_a, col_b = st.columns([4, 1])
-        col_a.caption(f"Conectado como **{cp['razon_social']}** (código {cp['codigo_sap']})")
+        col_a.caption(f"Conectado como **{cp['razon_social']}**")
         if col_b.button("Salir"):
             st.session_state.clear()
             st.rerun()
@@ -267,36 +317,36 @@ with tab_nuevo:
 
     # --- Paso 1: formulario normal --------------------------------------------
     else:
-        maestro = cargar_maestro_clientes()
         cliente = codigo_sap = ruc = None
         es_cliente_nuevo = False
 
         if PILOTO:
-            # En el piloto la empresa ya está identificada por su clave: no se elige.
-            cliente = st.session_state["cliente_piloto"]["razon_social"]
-            codigo_sap = st.session_state["cliente_piloto"]["codigo_sap"]
+            # En el piloto la empresa ya quedó identificada al ingresar: no se elige ni se ve ninguna lista.
+            cp = st.session_state["cliente_piloto"]
+            cliente, codigo_sap, ruc = cp["razon_social"], cp["codigo_sap"], (cp.get("ruc") or None)
         else:
-            es_cliente_nuevo = st.checkbox("Soy cliente nuevo / no encuentro mi empresa en la lista")
-
-        if PILOTO:
-            pass
-        elif not es_cliente_nuevo and maestro:
-            opciones = [f"{c['razon_social']} — {c['codigo_sap']}" for c in maestro]
-            busqueda = st.selectbox("Busca tu empresa (escribe parte del nombre)", options=[""] + opciones)
-            if busqueda:
-                cliente, codigo_sap = busqueda.split(" — ")
-        else:
-            ruc = st.text_input("RUC (11 dígitos)")
-            razon_social_sunat = None
-            if ruc and re.fullmatch(r"(10|15|17|20)\d{9}", ruc.strip()):
-                razon_social_sunat = buscar_razon_social_cacheada(ruc.strip())
+            # Modo abierto (solo para pruebas, sin Secrets): el cliente se identifica escribiendo
+            # su código o su RUC. Tampoco se muestra ninguna lista de clientes.
+            ident = "".join(st.text_input(
+                "Código de cliente San Fernando o RUC",
+                help="Si eres cliente nuevo y aún no tienes código, escribe tu RUC.",
+            ).split())
+            maestro = {c["codigo_sap"]: c["razon_social"] for c in cargar_maestro_clientes()}
+            if ident in maestro:
+                cliente, codigo_sap = maestro[ident], ident
+                st.success(f"Empresa: {cliente}")
+            elif re.fullmatch(r"(10|15|17|20)\d{9}", ident):
+                ruc, es_cliente_nuevo = ident, True
+                razon_social_sunat = buscar_razon_social_cacheada(ruc)
                 if razon_social_sunat:
                     st.success(f"Encontrado en SUNAT: {razon_social_sunat}")
-            cliente = st.text_input(
-                "Razón social de tu empresa",
-                value=razon_social_sunat or "",
-                help="Se completa sola si el RUC es válido y está registrado en SUNAT. Puedes corregirla si hace falta.",
-            )
+                cliente = st.text_input(
+                    "Razón social de tu empresa",
+                    value=razon_social_sunat or "",
+                    help="Se completa sola si el RUC está registrado en SUNAT. Puedes corregirla si hace falta.",
+                )
+            elif ident:
+                st.warning("No reconocemos ese código. Revísalo, o escribe el RUC de tu empresa (11 dígitos).")
 
         with st.form("form_reclamo"):
             motivo = st.selectbox("Motivo", [
