@@ -16,11 +16,13 @@ import os
 import smtplib
 from email.message import EmailMessage
 from aprobadores import CORREOS_ROLES, siguiente_aprobador
+from config_piloto import leer
 
-SMTP_HOST = os.environ.get("SF_SMTP_HOST", "smtp.office365.com")
-SMTP_PORT = int(os.environ.get("SF_SMTP_PORT", "587"))
-SMTP_USER = os.environ.get("SF_SMTP_USER")
-SMTP_PASS = os.environ.get("SF_SMTP_PASS")
+# Se leen de los Secrets de Streamlit Cloud (o de variables de entorno en tu PC)
+SMTP_HOST = leer("SF_SMTP_HOST", "smtp.office365.com")
+SMTP_PORT = int(leer("SF_SMTP_PORT", "587"))
+SMTP_USER = leer("SF_SMTP_USER")
+SMTP_PASS = leer("SF_SMTP_PASS")
 
 
 def _enviar(destinatario, asunto, cuerpo):
@@ -87,9 +89,9 @@ def enviar_comprobante_cliente(correo_destino, ticket_id, pdf_bytes=None, html_c
     msg = EmailMessage()
     msg["From"] = SMTP_USER
     msg["To"] = correo_destino
-    msg["Subject"] = f"San Fernando - Comprobante de tu reclamo #{ticket_id}"
+    msg["Subject"] = f"San Fernando - Comprobante de tu reclamo {ticket_id}"
     msg.set_content(
-        f"Adjuntamos el comprobante de tu reclamo #{ticket_id}.\n\n"
+        f"Adjuntamos el comprobante de tu reclamo {ticket_id}.\n\n"
         f"Conserva este número para cualquier consulta sobre su estado."
     )
     if pdf_bytes:
@@ -98,7 +100,7 @@ def enviar_comprobante_cliente(correo_destino, ticket_id, pdf_bytes=None, html_c
     elif html_comprobante:
         msg.add_alternative(html_comprobante, subtype="html")
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
             server.starttls()
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)

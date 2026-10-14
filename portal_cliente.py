@@ -9,6 +9,11 @@ todo está correcto (evita errores de digitación, sobre todo en el monto).
 A propósito NO se muestra el plazo de atención (5 días hábiles) al cliente: es un
 SLA interno para dar seguimiento, no una promesa de resultado automático.
 
+MODO PILOTO (Secrets PILOTO_CLIENTES configurado): solo entran los distribuidores
+del piloto, cada uno con su clave. Cada reclamo se envía por correo al buzón que vigila
+Power Automate, que lo guarda en SharePoint. El reclamo solo se confirma al cliente si
+ese envío salió bien — así nunca le damos un número a algo que no quedó registrado.
+
 Corre con:
     streamlit run portal_cliente.py
 """
@@ -17,11 +22,15 @@ import streamlit as st
 import csv
 import base64
 import re
+import hmac
 from pathlib import Path
 from db import init_db, crear_ticket, get_ticket, tickets_recientes_similares
 from consulta_ruc import consultar_razon_social
 from notificador import enviar_comprobante_cliente
 from generador_pdf import generar_comprobante_pdf
+from config_piloto import clientes_piloto
+from envio_reclamo import (generar_codigo, enviar_reclamo, envio_configurado,
+                           nombre_archivo_seguro, ahora_lima)
 
 SUSTENTOS_DIR = Path(__file__).parent / "sustentos"
 SUSTENTOS_DIR.mkdir(exist_ok=True)
@@ -31,6 +40,9 @@ LOGO_PATH = Path(__file__).parent / "assets" / "logo_san_fernando.png"
 AZUL_SF = "#004B9C"
 AZUL_SF_OSCURO = "#002F63"
 AZUL_SF_CLARO = "#3D7CC9"
+MAX_SUSTENTO_MB = 15  # el correo de envío acepta hasta ~25 MB; dejamos margen
+
+PILOTO = clientes_piloto()  # {codigo_sap: clave}; vacío = portal abierto (pruebas locales)
 
 init_db()
 
@@ -40,7 +52,12 @@ def cargar_maestro_clientes():
     if not MAESTRO_PATH.exists():
         return []
     with open(MAESTRO_PATH, encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+        filas = list(csv.DictReader(f))
+    # El export de SAP trae espacios "duros" (\xa0) y espacios dobles: se normalizan
+    for c in filas:
+        for k in ("codigo_sap", "razon_social"):
+            c[k] = " ".join((c.get(k) or "").replace("\xa0", " ").split())
+    return filas
 
 
 @st.cache_data
@@ -96,6 +113,35 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# ---------------------------------------------------------------------------
+# Acceso del piloto: cada distribuidor entra con su clave
+if PILOTO:
+    if "cliente_piloto" not in st.session_state:
+        maestro_completo = {c["codigo_sap"]: c["razon_social"] for c in cargar_maestro_clientes()}
+        empresas = {f"{maestro_completo.get(cod, 'Cliente')} — {cod}": cod for cod in PILOTO}
+        st.markdown("#### Ingreso para distribuidores")
+        with st.form("login_piloto"):
+            empresa = st.selectbox("Tu empresa", list(empresas.keys()))
+            clave = st.text_input("Clave de acceso", type="password",
+                                  help="Te la entregó tu ejecutivo de San Fernando.")
+            if st.form_submit_button("Ingresar"):
+                cod = empresas[empresa]
+                if hmac.compare_digest(clave.strip().encode(), PILOTO[cod].strip().encode()):
+                    st.session_state["cliente_piloto"] = {
+                        "codigo_sap": cod, "razon_social": maestro_completo.get(cod, empresa.split(" — ")[0]),
+                    }
+                    st.rerun()
+                else:
+                    st.error("La clave no es correcta. Revísala o consulta con tu ejecutivo de San Fernando.")
+        st.stop()
+    else:
+        cp = st.session_state["cliente_piloto"]
+        col_a, col_b = st.columns([4, 1])
+        col_a.caption(f"Conectado como **{cp['razon_social']}** (código {cp['codigo_sap']})")
+        if col_b.button("Salir"):
+            st.session_state.clear()
+            st.rerun()
+
 tab_nuevo, tab_consulta = st.tabs(["📝 Registrar un reclamo", "🔍 Consultar estado de mi reclamo"])
 
 # ---------------------------------------------------------------------------
@@ -117,7 +163,7 @@ with tab_nuevo:
         if not b["sustento_filename"]:
             st.warning("No adjuntaste ningún sustento. Puedes enviarlo igual, pero podría demorar más la revisión.")
         if b.get("posible_duplicado"):
-            st.warning(f"⚠️ Ya registraste algo muy parecido hace poco (ticket #{b['posible_duplicado']}). Si fue sin querer, no hace falta enviarlo de nuevo.")
+            st.warning("⚠️ Hace unos minutos registraste un reclamo muy parecido (misma empresa, motivo y monto). Si fue sin querer, no hace falta enviarlo de nuevo.")
         st.caption("⚠️ Revisa sobre todo el monto y el nombre de la empresa — una vez enviado no se puede editar desde aquí.")
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -128,26 +174,67 @@ with tab_nuevo:
                 st.rerun()
         with col2:
             if st.button("✅ Confirmar y enviar definitivamente"):
+                # El código se genera una sola vez por borrador: si el envío falla y el
+                # cliente reintenta, se reusa y SharePoint no recibe dos códigos distintos.
+                codigo = b.setdefault("codigo", generar_codigo())
+                fecha = ahora_lima().strftime("%d/%m/%Y %H:%M")
+                datos = {
+                    "codigo": codigo,
+                    "fecha_registro": ahora_lima().isoformat(timespec="seconds"),
+                    "cliente": b["cliente"], "codigo_sap": b["codigo_sap"] or "",
+                    "ruc": b["ruc"] or "", "cliente_nuevo": bool(b["es_cliente_nuevo"]),
+                    "motivo": b["motivo"], "incidencia": b["incidencia"] or "",
+                    "monto_reclamado": round(float(b["monto"] or 0), 2),
+                    "detalle": b["detalle"], "correo_cliente": b["correo"] or "",
+                    "estado": "Pendiente de validación de cliente" if b["es_cliente_nuevo"] else "Registrado",
+                }
+
+                if envio_configurado():
+                    with st.spinner("Registrando tu reclamo..."):
+                        ok, error = enviar_reclamo(datos, b["sustento_bytes"], b["sustento_filename"])
+                    if not ok:
+                        print(f"[ERROR envío reclamo {codigo}] {error}")  # visible en los logs de Streamlit Cloud
+                        st.error("No pudimos registrar tu reclamo en este momento. Tus datos siguen aquí: "
+                                 "intenta de nuevo en unos minutos con el mismo botón.")
+                        st.stop()
+                elif PILOTO:
+                    # En el piloto, nunca confirmamos algo que no llegó a SharePoint.
+                    print("[ERROR] Piloto activo pero faltan los Secrets de envío (SMTP / buzón).")
+                    st.error("El registro de reclamos no está disponible en este momento. "
+                             "Por favor, comunícate con tu ejecutivo de San Fernando.")
+                    st.stop()
+
+                # Copia local (solo de apoyo: Streamlit Cloud la puede borrar al reiniciar)
                 sustento_path = None
                 if b["sustento_bytes"] is not None:
-                    sustento_path = str(SUSTENTOS_DIR / b["sustento_filename"])
+                    sustento_path = str(SUSTENTOS_DIR / nombre_archivo_seguro(codigo, b["sustento_filename"]))
                     with open(sustento_path, "wb") as f:
                         f.write(b["sustento_bytes"])
+                try:
+                    crear_ticket(
+                        cliente=b["cliente"], codigo_sap=b["codigo_sap"], ruc=b["ruc"],
+                        es_cliente_nuevo=b["es_cliente_nuevo"], motivo=b["motivo"],
+                        incidencia=(f"{codigo} | {b['incidencia']}" if b["incidencia"] else codigo),
+                        detalle=b["detalle"], sustento_path=sustento_path,
+                        monto_reclamado=b["monto"] or None,
+                    )
+                except Exception as e:
+                    print(f"[AVISO] No se guardó la copia local de {codigo}: {e}")
 
-                tid = crear_ticket(
-                    cliente=b["cliente"], codigo_sap=b["codigo_sap"], ruc=b["ruc"],
-                    es_cliente_nuevo=b["es_cliente_nuevo"], motivo=b["motivo"],
-                    incidencia=b["incidencia"] or None, detalle=b["detalle"],
-                    sustento_path=sustento_path, monto_reclamado=b["monto"] or None,
-                )
-                ticket_guardado = get_ticket(tid)
+                ticket_pdf = {
+                    "id": codigo, "fecha_creacion": fecha, "cliente": b["cliente"],
+                    "ruc": b["ruc"], "codigo_sap": b["codigo_sap"], "motivo": b["motivo"],
+                    "incidencia": b["incidencia"], "monto_reclamado": f"{float(b['monto'] or 0):,.2f}",
+                    "detalle_motivo": b["detalle"],
+                }
                 pdf_bytes = generar_comprobante_pdf(
-                    ticket_guardado, logo_path=LOGO_PATH if LOGO_PATH.exists() else None,
+                    ticket_pdf, logo_path=LOGO_PATH if LOGO_PATH.exists() else None,
                     sustento_path=sustento_path,
                 )
                 st.session_state["ultimo_comprobante"] = {
-                    "tid": tid, "pdf": pdf_bytes, "es_cliente_nuevo": b["es_cliente_nuevo"],
+                    "tid": codigo, "pdf": pdf_bytes, "es_cliente_nuevo": b["es_cliente_nuevo"],
                     "correo": b["correo"], "correo_enviado": False,
+                    "registrado_remoto": envio_configurado(),
                 }
                 del st.session_state["borrador"]
                 st.rerun()
@@ -155,7 +242,9 @@ with tab_nuevo:
     # --- Resultado final: comprobante listo para descargar --------------------
     elif "ultimo_comprobante" in st.session_state:
         info = st.session_state["ultimo_comprobante"]
-        st.success(f"Reclamo recibido. Tu número de seguimiento es #{info['tid']}.")
+        st.success(f"Reclamo recibido. Tu número de seguimiento es **{info['tid']}**.")
+        if not info.get("registrado_remoto"):
+            st.caption("(Modo prueba: este reclamo solo se guardó localmente, no se envió a SharePoint.)")
         if info["es_cliente_nuevo"]:
             st.info("Como no encontramos tu empresa en nuestro sistema, primero validaremos tus datos.")
 
@@ -179,10 +268,19 @@ with tab_nuevo:
     # --- Paso 1: formulario normal --------------------------------------------
     else:
         maestro = cargar_maestro_clientes()
-        es_cliente_nuevo = st.checkbox("Soy cliente nuevo / no encuentro mi empresa en la lista")
         cliente = codigo_sap = ruc = None
+        es_cliente_nuevo = False
 
-        if not es_cliente_nuevo and maestro:
+        if PILOTO:
+            # En el piloto la empresa ya está identificada por su clave: no se elige.
+            cliente = st.session_state["cliente_piloto"]["razon_social"]
+            codigo_sap = st.session_state["cliente_piloto"]["codigo_sap"]
+        else:
+            es_cliente_nuevo = st.checkbox("Soy cliente nuevo / no encuentro mi empresa en la lista")
+
+        if PILOTO:
+            pass
+        elif not es_cliente_nuevo and maestro:
             opciones = [f"{c['razon_social']} — {c['codigo_sap']}" for c in maestro]
             busqueda = st.selectbox("Busca tu empresa (escribe parte del nombre)", options=[""] + opciones)
             if busqueda:
@@ -228,6 +326,8 @@ with tab_nuevo:
                     errores.append("Indica tu empresa y cuéntanos qué pasó.")
                 if ruc and not re.fullmatch(r"(10|15|17|20)\d{9}", ruc.strip()):
                     errores.append("El RUC debe tener 11 dígitos y empezar con 10, 15, 17 o 20.")
+                if sustento is not None and sustento.size > MAX_SUSTENTO_MB * 1024 * 1024:
+                    errores.append(f"El sustento pesa más de {MAX_SUSTENTO_MB} MB. Sube una foto o PDF más liviano.")
                 if correo_cliente and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", correo_cliente.strip()):
                     errores.append("El correo no tiene un formato válido (ejemplo: nombre@empresa.com).")
 
@@ -250,28 +350,33 @@ with tab_nuevo:
 
 # ---------------------------------------------------------------------------
 with tab_consulta:
-    st.caption("Ingresa tu número de ticket y el nombre de tu empresa para verificar el estado.")
+    if PILOTO:
+        st.info("Durante el piloto, tu ejecutivo de San Fernando te informará el avance de cada reclamo. "
+                "Ten a la mano tu número de seguimiento (empieza con R-) y el comprobante en PDF.")
+    else:
+        st.caption("Ingresa tu número de ticket y el nombre de tu empresa para verificar el estado.")
 
-    ESTADOS_CLIENTE = {
-        "PENDIENTE_VALIDACION_CLIENTE": "Validando tus datos como cliente nuevo",
-        "REGISTRADO": "Recibido, pendiente de revisión",
-        "MONTO_FIJADO": "En revisión (monto ya evaluado)",
-        "EN_REVISION_PRODUCCION": "En validación interna",
-        "PENDIENTE_APROBACION": "En proceso de aprobación",
-        "APROBADO": "Aprobado, en trámite de emisión",
-        "CARGADO_EN_PLATAFORMA": "Nota de crédito/débito emitida",
-        "RECHAZADO": "No procede",
-    }
+        ESTADOS_CLIENTE = {
+            "PENDIENTE_VALIDACION_CLIENTE": "Validando tus datos como cliente nuevo",
+            "REGISTRADO": "Recibido, pendiente de revisión",
+            "MONTO_FIJADO": "En revisión (monto ya evaluado)",
+            "EN_REVISION_PRODUCCION": "En validación interna",
+            "PENDIENTE_APROBACION": "En proceso de aprobación",
+            "APROBADO": "Aprobado, en trámite de emisión",
+            "CARGADO_EN_PLATAFORMA": "Nota de crédito/débito emitida",
+            "RECHAZADO": "No procede",
+        }
 
-    num_ticket = st.number_input("Número de ticket", min_value=1, step=1)
-    nombre_verificacion = st.text_input("Nombre de tu empresa (tal como lo registraste)")
+        num_ticket = st.number_input("Número de ticket", min_value=1, step=1)
+        nombre_verificacion = st.text_input("Nombre de tu empresa (tal como lo registraste)")
 
-    if st.button("Consultar"):
-        t = get_ticket(int(num_ticket))
-        if t is None or nombre_verificacion.strip().lower() not in (t["cliente"] or "").lower():
-            st.error("No se encontró un reclamo con esos datos. Revisa el número de ticket y el nombre de tu empresa.")
-        else:
-            st.success(f"Ticket #{t['id']} — {ESTADOS_CLIENTE.get(t['estado'], t['estado'])}")
-            st.write(f"**Fecha de registro:** {t['fecha_creacion']}")
-            if t["monto_final"] is not None:
-                st.write(f"**Monto reconocido:** S/ {t['monto_final']}")
+        if st.button("Consultar"):
+            t = get_ticket(int(num_ticket))
+            if (t is None or not nombre_verificacion.strip()
+                  or nombre_verificacion.strip().lower() != (t["cliente"] or "").strip().lower()):
+                st.error("No se encontró un reclamo con esos datos. Revisa el número de ticket y el nombre de tu empresa.")
+            else:
+                st.success(f"Ticket #{t['id']} — {ESTADOS_CLIENTE.get(t['estado'], t['estado'])}")
+                st.write(f"**Fecha de registro:** {t['fecha_creacion']}")
+                if t["monto_final"] is not None:
+                    st.write(f"**Monto reconocido:** S/ {t['monto_final']}")

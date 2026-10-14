@@ -74,7 +74,7 @@ def generar_comprobante_pdf(ticket, logo_path=None, sustento_path=None):
 
     columna_izquierda = [Paragraph("Datos del ticket", estilo_titulo_col)]
     for label, valor in [
-        ("N° de ticket", f"#{ticket['id']}"),
+        ("N° de seguimiento", str(ticket["id"]) if str(ticket["id"]).startswith("R-") else f"#{ticket['id']}"),
         ("Fecha y hora de registro", ticket["fecha_creacion"]),
         ("Cliente", ticket["cliente"]),
         ("RUC", ticket["ruc"] or "(vía código SAP)"),

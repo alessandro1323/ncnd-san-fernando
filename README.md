@@ -1,5 +1,7 @@
 # Automatización NC/ND — San Fernando
 
+> **Piloto con distribuidores:** ver [PILOTO_SHAREPOINT.md](PILOTO_SHAREPOINT.md) — acceso con clave por distribuidor y registro de reclamos en SharePoint vía Power Automate.
+
 Todo en Python puro, pensado para correr desde tus notebooks de Jupyter. Cuatro módulos:
 
 - `db.py` — base de datos SQLite (`ncnd.db`, se crea sola) con el estado de cada ticket.
