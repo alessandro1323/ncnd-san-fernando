@@ -29,9 +29,14 @@ SF_SMTP_PASS = "abcd efgh ijkl mnop"
 SF_BUZON_RECLAMOS = "tu.correo@sanfernando.com.pe"
 SF_TOKEN_FLUJO = "elige-una-frase-larga-secreta"
 
-[PILOTO_CLIENTES]
-"CODIGO_SAP_DISTRIBUIDOR_1" = "clave-distribuidor-1"
-"CODIGO_SAP_DISTRIBUIDOR_2" = "clave-distribuidor-2"
+[PILOTO_CLIENTES.CODIGO_SAP_DISTRIBUIDOR_1]
+clave = "clave-distribuidor-1"
+razon_social = "RAZON SOCIAL DEL DISTRIBUIDOR 1"
+ruc = "20XXXXXXXXX"   # opcional: permite entrar también con el RUC
+
+[PILOTO_CLIENTES.CODIGO_SAP_DISTRIBUIDOR_2]
+clave = "clave-distribuidor-2"
+razon_social = "RAZON SOCIAL DEL DISTRIBUIDOR 2"
 ```
 
 **Cómo ingresa el cliente:** escribe su **código de cliente (o RUC) + su clave**. El portal
@@ -39,17 +44,9 @@ SF_TOKEN_FLUJO = "elige-una-frase-larga-secreta"
 El error es siempre el mismo ("código/RUC o clave no son correctos"), para no revelar qué códigos
 existen, y tras 5 intentos fallidos ese acceso se bloquea 15 minutos.
 
-Si quieres que un distribuidor también pueda entrar con su **RUC**, escríbelo así en lugar de la línea simple:
-
-```toml
-[PILOTO_CLIENTES.1100679218]
-clave = "clave-distribuidor-1"
-ruc = "20123456789"
-```
-
-La razón social se toma de `clientes_maestro.csv`; si el código no está ahí, agrega
-`razon_social = "..."` en ese mismo bloque. Entrega a cada distribuidor **su código y su clave**
-por un canal privado (WhatsApp o llamada), nunca en un correo masivo.
+**El maestro de clientes (`clientes_maestro.csv`) NO va en el repositorio**: es confidencial.
+Por eso la razón social de cada distribuidor del piloto se escribe en los Secrets. Entrega a cada
+distribuidor **su código y su clave** por un canal privado (WhatsApp o llamada), nunca en un correo masivo.
 
 ## Paso 3 — Lista y carpeta (10 min)
 
@@ -154,8 +151,9 @@ En make.powerautomate.com, con tu cuenta corporativa: **Crear → Flujo de nube 
 - [ ] El correo del Gmail llega a tu bandeja corporativa y no a Correo no deseado o cuarentena.
       Si cae en cuarentena, pide a Sistemas que permitan ese remitente: es un pedido simple.
 - [ ] Haz una prueba completa con sustento (foto y PDF) y revisa que el archivo esté en la carpeta.
-- [ ] Pon el repositorio de GitHub como **privado**: contiene el maestro de clientes.
-      Streamlit Cloud sigue funcionando igual con repos privados.
+- [ ] Confirma que `clientes_maestro.csv` **no** está en el repositorio (ya está en `.gitignore`).
+      Si más adelante pones el repo como privado, primero autoriza a Streamlit el acceso a repos
+      privados (share.streamlit.io → Settings → Linked accounts → GitHub) o la app dejará de cargar.
 - [ ] Cambia las claves por defecto del portal interno (o no lo publiques durante el piloto:
       el flujo interno se maneja en la Lista).
 

@@ -2,3 +2,4 @@ ncnd.db
 sustentos/
 .streamlit/secrets.toml
 __pycache__/
+clientes_maestro.csv

@@ -17,15 +17,18 @@ En Streamlit Cloud: App → Settings → Secrets, y pega algo como esto:
     # --- Palabra secreta que Power Automate verifica (evita correos falsos) ---
     SF_TOKEN_FLUJO = "una-frase-larga-que-solo-tu-conoces"
 
-    # --- Distribuidores del piloto: código SAP = clave de acceso de cada uno ---
-    [PILOTO_CLIENTES]
-    "1100679218" = "clave-distribuidor-uno"
-    "1101229390" = "clave-distribuidor-dos"
+    # --- Distribuidores del piloto (un bloque por cliente) ---
+    [PILOTO_CLIENTES.1100679218]
+    clave = "clave-distribuidor-uno"
+    razon_social = "NOMBRE DEL DISTRIBUIDOR UNO S.A.C."
+    ruc = "20123456789"        # opcional: permite entrar también con el RUC
 
-    # Opcional: si quieres que también puedan entrar con su RUC, usa esta forma:
-    # [PILOTO_CLIENTES.1100679218]
-    # clave = "clave-distribuidor-uno"
-    # ruc = "20123456789"
+    [PILOTO_CLIENTES.1101229390]
+    clave = "clave-distribuidor-dos"
+    razon_social = "NOMBRE DEL DISTRIBUIDOR DOS S.A.C."
+
+La razón social va en los Secrets porque el maestro de clientes (clientes_maestro.csv)
+NO se sube al repositorio: es información confidencial de San Fernando.
 
 Si PILOTO_CLIENTES no está configurado, el portal funciona abierto como antes
 (útil para probar en tu PC).
